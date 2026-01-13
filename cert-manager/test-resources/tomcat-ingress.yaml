@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tomcat
+  namespace: tomcat-test
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - tomcat-test.staging.platform.zhukovsd.it
+    secretName: tomcat-test-tls
+  rules:
+  - host: tomcat-test.staging.platform.zhukovsd.it
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: tomcat
+            port:
+              number: 80

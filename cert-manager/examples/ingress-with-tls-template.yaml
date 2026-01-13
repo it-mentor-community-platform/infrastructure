@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: <app-name>
+  namespace: <namespace>
+  annotations:
+    # Для production используйте letsencrypt-prod
+    # Для staging используйте letsencrypt-staging
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    
+    # Дополнительные аннотации nginx (опционально)
+    # nginx.ingress.kubernetes.io/rewrite-target: /
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  
+  # Секция TLS - обязательна для HTTPS
+  tls:
+  - hosts:
+    - <your-domain.com>
+    secretName: <app-name>-tls  # cert-manager создаст автоматически
+  
+  # Правила маршрутизации
+  rules:
+  - host: <your-domain.com>
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: <service-name>
+            port:
+              number: 80
