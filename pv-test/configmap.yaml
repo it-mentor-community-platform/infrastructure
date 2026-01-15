@@ -1,0 +1,195 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pv-test-nginx
+  namespace: pv-test
+data:
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+
+      location / {
+        root /usr/share/nginx/html;
+        index index.html;
+      }
+
+      location /persistent/ {
+        alias /usr/share/nginx/html/persistent/;
+        autoindex off;
+      }
+
+      location /temporary/ {
+        alias /usr/share/nginx/html/temporary/;
+        autoindex off;
+      }
+    }
+
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>PV Test - Selectel</title>
+      <meta http-equiv="refresh" content="5">
+      <style>
+        body { 
+          font-family: monospace; 
+          max-width: 700px; 
+          margin: 40px auto; 
+          padding: 20px;
+          background: #fafafa;
+        }
+        h1 { 
+          border-bottom: 2px solid #333; 
+          padding-bottom: 10px; 
+        }
+        .disk { 
+          border: 1px solid #ccc; 
+          padding: 20px; 
+          margin: 20px 0; 
+          background: white;
+        }
+        .disk h2 { 
+          margin-top: 0; 
+        }
+        .status { 
+          font-size: 24px; 
+          font-weight: bold; 
+          padding: 10px; 
+          margin: 10px 0;
+        }
+        .info { 
+          background: #f0f0f0; 
+          padding: 3px 6px; 
+          margin: 5px 0; 
+          display: block;
+        }
+        code { 
+          background: #e0e0e0; 
+          padding: 2px 4px; 
+        }
+        .test-section {
+          border-top: 1px solid #ccc;
+          padding-top: 20px;
+          margin-top: 30px;
+        }
+        .test-step {
+          margin: 15px 0;
+          padding: 12px;
+          background: #f9f9f9;
+          border-left: 3px solid #666;
+        }
+        .test-step strong {
+          display: block;
+          margin-bottom: 8px;
+          color: #333;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>PV Test: Retain vs Delete</h1>
+
+      <div class="disk">
+        <h2>Persistent Volume (Retain)</h2>
+        <div class="status">
+          <iframe src="/persistent/result.txt" style="border:none;width:100%;height:30px;"></iframe>
+        </div>
+        <span class="info">File: <code>/data/persistent/test.txt</code></span>
+        <span class="info">Checksum: <code>/data/persistent/checksum.txt</code></span>
+        <span class="info">Policy: Диск остаётся в Selectel после удаления PVC</span>
+      </div>
+
+      <div class="disk">
+        <h2>Temporary Volume (Delete)</h2>
+        <div class="status">
+          <iframe src="/temporary/result.txt" style="border:none;width:100%;height:30px;"></iframe>
+        </div>
+        <span class="info">File: <code>/data/temporary/test.txt</code></span>
+        <span class="info">Checksum: <code>/data/temporary/checksum.txt</code></span>
+        <span class="info">Policy: Диск удаляется из Selectel вместе с PVC</span>
+      </div>
+
+      <div class="test-section">
+        <h3>🧪 Финальный тест восстановления</h3>
+        
+        <div class="test-step">
+          <strong>Шаг 1: Инициализация данных</strong>
+          <code>kubectl apply -f job-init.yaml</code><br>
+          <code>kubectl wait --for=condition=complete job/pv-init-once -n pv-test --timeout=60s</code><br>
+          <code>kubectl delete pod -n pv-test -l app=pv-test</code><br>
+          <small>Результат: оба диска показывают OK</small>
+        </div>
+        
+        <div class="test-step">
+          <strong>Шаг 2: Сохраняем ID дисков</strong>
+          <code>kubectl get pv -o wide</code><br>
+          <small>Запомните volumeHandle persistent диска (ID в Selectel)</small>
+        </div>
+        
+        <div class="test-step">
+          <strong>Шаг 3: Удаление PVC (главный тест!)</strong>
+          <code>kubectl delete deployment pv-test -n pv-test</code><br>
+          <code>kubectl delete pvc pv-test-persistent pv-test-temporary -n pv-test</code><br>
+          <code>kubectl get pv</code><br>
+          <small>Результат: Persistent PV в Released, Temporary PV удалён</small>
+        </div>
+        
+        <div class="test-step">
+          <strong>Шаг 4: Проверка дисков в Selectel</strong>
+          <small>Откройте панель Selectel → Облачная платформа → Диски</small><br>
+          <small>✅ Persistent диск остался</small><br>
+          <small>❌ Temporary диск удалён</small>
+        </div>
+        
+        <div class="test-step">
+          <strong>Шаг 5: Пересоздание с новыми дисками</strong>
+          <code>kubectl apply -f pvc-persistent.yaml</code><br>
+          <code>kubectl apply -f pvc-temporary.yaml</code><br>
+          <code>kubectl apply -f deployment.yaml</code><br>
+          <small>Результат: оба диска ERROR (новые пустые диски)</small>
+        </div>
+        
+        <div class="test-step">
+          <strong>Шаг 6: Восстановление Retain диска</strong>
+          <code># Создаём PV для существующего диска в Selectel</code><br>
+          <code>cat &lt;&lt;EOF | kubectl apply -f -</code><br>
+          <code>apiVersion: v1</code><br>
+          <code>kind: PersistentVolume</code><br>
+          <code>metadata:</code><br>
+          <code>  name: pv-restored</code><br>
+          <code>spec:</code><br>
+          <code>  capacity:</code><br>
+          <code>    storage: 1Gi</code><br>
+          <code>  accessModes: [ReadWriteOnce]</code><br>
+          <code>  persistentVolumeReclaimPolicy: Retain</code><br>
+          <code>  storageClassName: selectel-hdd-retain</code><br>
+          <code>  csi:</code><br>
+          <code>    driver: cinder.csi.openstack.org</code><br>
+          <code>    fsType: ext4</code><br>
+          <code>    volumeHandle: &lt;ID_ДИСКА_ИЗ_SELECTEL&gt;</code><br>
+          <code>EOF</code>
+        </div>
+        
+        <div class="test-step">
+          <strong>Шаг 7: Привязка PVC к восстановленному PV</strong>
+          <code>kubectl delete deployment pv-test -n pv-test</code><br>
+          <code>kubectl delete pvc pv-test-persistent -n pv-test</code><br>
+          <code># Создаём PVC с volumeName: pv-restored</code><br>
+          <code>kubectl apply -f pvc-persistent-restored.yaml</code><br>
+          <code>kubectl apply -f deployment.yaml</code>
+        </div>
+        
+        <div class="test-step">
+          <strong>Шаг 8: Финальная проверка</strong>
+          <small>✅ Persistent: OK (данные восстановлены из старого диска!)</small><br>
+          <small>❌ Temporary: ERROR (диск был удалён навсегда)</small>
+        </div>
+      </div>
+      
+      <div style="margin-top: 20px; padding: 15px; background: #e8f5e9; border-left: 4px solid #4caf50;">
+        <strong>Вывод:</strong> Retain позволяет восстановить данные после удаления PVC,
+        Delete удаляет диск безвозвратно.
+      </div>
+    </body>
+    </html>

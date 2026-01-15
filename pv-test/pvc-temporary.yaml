@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pv-test-temporary
+  namespace: pv-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: selectel-hdd-delete
+  resources:
+    requests:
+      storage: 1Gi

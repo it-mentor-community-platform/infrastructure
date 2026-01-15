@@ -1,0 +1,10 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: selectel-hdd-retain
+provisioner: cinder.csi.openstack.org
+parameters:
+  type: basic.ru-7
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate

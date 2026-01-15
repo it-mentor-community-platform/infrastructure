@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pv-test
+  namespace: pv-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pv-test
+  template:
+    metadata:
+      labels:
+        app: pv-test
+    spec:
+      initContainers:
+      - name: check-volumes
+        image: busybox:1.36
+        command:
+        - /bin/sh
+        - -c
+        - |
+          check_volume() {
+            NAME=$1
+            PATH=$2
+            
+            echo "=== Checking $NAME ==="
+            
+            FILE="$PATH/test.txt"
+            CHECKSUM_FILE="$PATH/checksum.txt"
+            RESULT_FILE="$PATH/result.txt"
+            
+            # Проверяем наличие файлов
+            if [ ! -f "$FILE" ]; then
+              echo "ERROR: File not found" > "$RESULT_FILE"
+              echo "$NAME: File NOT FOUND"
+              return
+            fi
+            
+            if [ ! -f "$CHECKSUM_FILE" ]; then
+              echo "ERROR: Checksum not found" > "$RESULT_FILE"
+              echo "$NAME: Checksum NOT FOUND"
+              return
+            fi
+            
+            # Читаем данные
+            STORED_CHECKSUM=$(cat "$CHECKSUM_FILE")
+            ACTUAL_CHECKSUM=$(md5sum "$FILE" | awk '{print $1}')
+            CONTENT=$(cat "$FILE")
+            
+            # Проверяем контрольную сумму
+            if [ "$STORED_CHECKSUM" = "$ACTUAL_CHECKSUM" ]; then
+              echo "OK: $ACTUAL_CHECKSUM" > "$RESULT_FILE"
+              echo "$NAME: OK (checksum matches)"
+            else
+              echo "ERROR: Checksum mismatch" > "$RESULT_FILE"
+              echo "$NAME: MISMATCH (expected: $STORED_CHECKSUM, got: $ACTUAL_CHECKSUM)"
+            fi
+          }
+          
+          check_volume "Persistent" "/data/persistent"
+          check_volume "Temporary" "/data/temporary"
+          
+          echo "=== Done ==="
+        volumeMounts:
+        - name: persistent-storage
+          mountPath: /data/persistent
+        - name: temporary-storage
+          mountPath: /data/temporary
+
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: persistent-storage
+          mountPath: /usr/share/nginx/html/persistent
+          readOnly: true
+        - name: temporary-storage
+          mountPath: /usr/share/nginx/html/temporary
+          readOnly: true
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+        - name: nginx-index
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+            
+      volumes:
+      - name: persistent-storage
+        persistentVolumeClaim:
+          claimName: pv-test-persistent
+      - name: temporary-storage
+        persistentVolumeClaim:
+          claimName: pv-test-temporary
+      - name: nginx-config
+        configMap:
+          name: pv-test-nginx
+          items:
+          - key: default.conf
+            path: default.conf
+      - name: nginx-index
+        configMap:
+          name: pv-test-nginx
+          items:
+          - key: index.html
+            path: index.html

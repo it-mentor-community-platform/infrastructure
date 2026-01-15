@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pv-init-once
+  namespace: pv-test
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: init
+        image: busybox:1.36
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Initializing test data ==="
+          
+          # Создаём одинаковый тестовый файл на обоих дисках
+          CONTENT="TEST_DATA_SELECTEL_PV_2026"
+          
+          echo "$CONTENT" > /data/persistent/test.txt
+          echo "$CONTENT" > /data/temporary/test.txt
+          
+          # Вычисляем и сохраняем контрольную сумму
+          md5sum /data/persistent/test.txt | awk '{print $1}' > /data/persistent/checksum.txt
+          md5sum /data/temporary/test.txt | awk '{print $1}' > /data/temporary/checksum.txt
+          
+          echo "Persistent disk:"
+          echo "  File: $(cat /data/persistent/test.txt)"
+          echo "  MD5:  $(cat /data/persistent/checksum.txt)"
+          
+          echo "Temporary disk:"
+          echo "  File: $(cat /data/temporary/test.txt)"
+          echo "  MD5:  $(cat /data/temporary/checksum.txt)"
+          
+          echo "=== Done ==="
+        volumeMounts:
+        - name: persistent-storage
+          mountPath: /data/persistent
+        - name: temporary-storage
+          mountPath: /data/temporary
+      volumes:
+      - name: persistent-storage
+        persistentVolumeClaim:
+          claimName: pv-test-persistent
+      - name: temporary-storage
+        persistentVolumeClaim:
+          claimName: pv-test-temporary

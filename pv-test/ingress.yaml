@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pv-test
+  namespace: pv-test
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - pv-test.staging.platform.zhukovsd.it
+    secretName: pv-test-tls
+  rules:
+  - host: pv-test.staging.platform.zhukovsd.it
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: pv-test
+            port:
+              number: 80
