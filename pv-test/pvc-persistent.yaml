@@ -7,7 +7,6 @@ spec:
   accessModes:
     - ReadWriteOnce
   storageClassName: selectel-hdd-retain
-  volumeName: pv-test-persistent-restored
   resources:
     requests:
       storage: 1Gi

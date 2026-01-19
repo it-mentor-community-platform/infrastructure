@@ -345,15 +345,179 @@ kubectl logs -n pv-test -l app=pv-test -c check-volumes
 
 - 2 HDD диска по 1GiB в зоне ru-7 (`basic.ru-7`)
 
-При цене ~1 ₽ за 1GiB/месяц:
+При цене ~7,42 ₽ за 1GiB/месяц:
 
-- Базовая конфигурация: 2 ₽/месяц
+- Базовая конфигурация: 14,42 ₽/месяц
 
-Итого максимум: около 2 ₽/месяц.
+Итого максимум: около 14,42 ₽/месяц.
 
 ##### Сравнение с SSD
 
 | Тип диска | Стоимость 1 GB/мес | Стоимость проекта |
 |-----------|-------------------|------------------|
-| **HDD (basic)** | ~1 ₽ | 2 ₽/мес |
-| **SSD (fast)** | ~3 ₽ | 6 ₽/мес |
+| **HDD (basic)** | ~7,42 ₽/месяц ₽ | 14,42 ₽/мес |
+
+
+### Управление типом диска и размером PV в Selectel
+
+В этой инструкции кратко описано:
+- как выбрать тип диска (HDD / SSD) через `StorageClass`
+- как увеличить размер существующего диска (PV/PVC)
+
+#### 1. Выбор типа диска (HDD / SSD)
+
+Тип диска задаётся в `StorageClass` через параметр `parameters.type`.
+
+Пример объявления `StorageClass` (для HDD в ru-7):
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: selectel-hdd-retain
+provisioner: cinder.csi.openstack.org
+parameters:
+  type: basic.ru-7        # HDD диск в ru-7
+  availability: ru-7
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+```
+
+В Selectel для сетевых дисков используются следующие типы (для зоны `ru-7`):
+
+```yaml
+parameters:
+  type: basic.ru-7        # HDD Базовый
+  availability: ru-7
+```
+
+```yaml
+parameters:
+  type: basicssd.ru-7     # SSD Базовый
+  availability: ru-7
+```
+
+```yaml
+parameters:
+  type: universal.ru-7     # SSD Универсальный
+  availability: ru-7
+```
+
+```yaml
+parameters:
+  type: universal2.ru-7    # SSD Универсальный v2
+  availability: ru-7
+```
+
+```yaml
+parameters:
+  type: fast.ru-7          # SSD Быстрый
+  availability: ru-7
+```
+
+PVC выбирает тип диска только через `storageClassName`:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: example-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: selectel-hdd-retain
+  resources:
+    requests:
+      storage: 5Gi
+```
+
+#### 2. Увеличение размера существующего диска (PV/PVC)
+
+В связке Selectel + CSI Cinder фактический размер диска определяется **PV + backend-диском**, а PVC – это только запрос на этот размер.
+
+Корректный порядок действий:
+- сначала увеличить размер **backend-диска в Selectel**
+- увеличить размер **PV диска**
+- затем привести **PVC** к тому же размеру
+
+**ВАЖНО! Уменьшать размер диска нельзя – только миграцией данных на новый меньший диск.**
+
+##### 2.1. Увеличение диска на стороне Selectel (backend)
+
+1. Открываем панель Selectel `my.selectel.ru`.
+2. Переходим в **Облачная платформа → Диски → ru-7**.
+3. Находим нужный диск по `volumeHandle` из PV:
+
+   ```bash
+   kubectl get pv -o custom-columns=NAME:.metadata.name,VOLUMEHANDLE:.spec.csi.volumeHandle,STORAGECLASS:.spec.storageClassName
+   ```
+
+4. В панели увеличиваем размер диска (например, с 1GiB до 5GiB).
+
+> На этом этапе PV и PVC в кластере всё ещё показывают старый размер – Kubernetes о росте диска не знает.
+
+##### 2.2. Обновление размера PV в Kubernetes
+
+После увеличения диска в Selectel нужно обновить `spec.capacity.storage` у PV.
+
+```bash
+kubectl edit pv <pv-name>
+
+# меняем:
+# spec:
+#   capacity:
+#     storage: 1Gi
+# на:
+#     storage: 5Gi
+```
+
+Проверяем:
+
+```bash
+kubectl get pv <pv-name>
+# CAPACITY должен стать 5Gi
+```
+
+##### 2.3. Обновление размера PVC
+
+Теперь приводим PVC к тому же размеру, что и PV.
+
+Рекомендуется остановить деплоймент, который использует PVC:
+
+```bash
+kubectl delete deployment pv-test -n pv-test
+```
+
+Меняем размер в PVC:
+
+```bash
+#вместо <pv-name> подставляем имя своего pv
+kubectl patch pv <pv-name> --type='json' -p='[{"op": "replace", "path": "/spec/capacity/storage", "value":"5Gi"}]'
+```
+
+Проверяем результат:
+
+```bash
+kubectl get pvc pv-test-persistent -n pv-test
+kubectl get pv  | grep pv-test-persistent
+
+# Оба объекта должны показывать 5Gi
+```
+
+##### 2.4. Перезапуск приложения и проверка
+
+Возвращаем Deployment:
+
+```bash
+kubectl apply -f deployment.yaml
+
+kubectl rollout status deployment/pv-test -n pv-test
+```
+
+Проверяем размер файловой системы внутри контейнера:
+
+```bash
+kubectl exec -n pv-test -it deployment/pv-test -- du -sh /usr/share/nginx/html/persistent
+```
