@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dev-readonly-binding
+subjects:
+- kind: ServiceAccount
+  name: dev-readonly
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: readonly-all-namespaces
+  apiGroup: rbac.authorization.k8s.io
