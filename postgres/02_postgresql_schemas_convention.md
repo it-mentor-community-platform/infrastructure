@@ -12,13 +12,13 @@
 
 ##### Схемы
 
-Формат: `<service_name>-<environment>`
+Формат: `<service_name>_<environment>`
 
 **Примеры:**
 - `auth-prod` — схема для сервиса аутентификации в production
-- `auth-stage` — схема для сервиса аутентификации в staging
+- `auth-staging` — схема для сервиса аутентификации в staging
 - `orders-prod` — схема для сервиса заказов в production
-- `orders-stage` — схема для сервиса заказов в staging
+- `orders-staging` — схема для сервиса заказов в staging
 
 ##### Пользователи
 
@@ -27,7 +27,7 @@
 
 **Примеры:**
 - `auth_prod_app`
-- `auth_stage_app`
+- `auth_staging_app`
 - `orders_prod_app`
 
 **Для чтения (read-only):**  
@@ -35,7 +35,7 @@
 
 **Примеры:**
 - `auth_prod_readonly`
-- `auth_stage_readonly`
+- `auth_staging_readonly`
 - `orders_prod_readonly`
 
 ##### Kubernetes Secrets
@@ -44,9 +44,9 @@
 
 **Примеры:**
 - `postgres-auth-prod-app`
-- `postgres-auth-stage-app`
+- `postgres-auth-staging-app`
 - `postgres-auth-prod-readonly`
-- `postgres-orders-stage-app`
+- `postgres-orders-staging-app`
 
 ---
 
@@ -67,7 +67,7 @@ kubectl exec -it deployment/bastion -n bastion -- psql
 CREATE SCHEMA IF NOT EXISTS "auth-prod";
 
 -- Схема для staging
-CREATE SCHEMA IF NOT EXISTS "auth-stage";
+CREATE SCHEMA IF NOT EXISTS "auth-staging";
 
 -- Проверка
 \dn
@@ -123,46 +123,46 @@ GRANT SELECT ON TABLES TO auth_prod_readonly;
 
 ```sql
 -- Создание пользователя
-CREATE USER auth_stage_app WITH PASSWORD 'СГЕНЕРИРОВАННЫЙ_ПАРОЛЬ_3';
+CREATE USER auth_staging_app WITH PASSWORD 'СГЕНЕРИРОВАННЫЙ_ПАРОЛЬ_3';
 
 -- Права на подключение
-GRANT CONNECT ON DATABASE db_main TO auth_stage_app;
+GRANT CONNECT ON DATABASE db_main TO auth_staging_app;
 
 -- Права на схему
-GRANT USAGE, CREATE ON SCHEMA "auth-stage" TO auth_stage_app;
+GRANT USAGE, CREATE ON SCHEMA "auth-staging" TO auth_staging_app;
 
 -- Права на все объекты
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA "auth-stage" TO auth_stage_app;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "auth-stage" TO auth_stage_app;
-GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA "auth-stage" TO auth_stage_app;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA "auth-staging" TO auth_staging_app;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "auth-staging" TO auth_staging_app;
+GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA "auth-staging" TO auth_staging_app;
 
 -- Автоматические права
-ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-stage" 
-GRANT ALL ON TABLES TO auth_stage_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-staging" 
+GRANT ALL ON TABLES TO auth_staging_app;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-stage" 
-GRANT ALL ON SEQUENCES TO auth_stage_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-staging" 
+GRANT ALL ON SEQUENCES TO auth_staging_app;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-stage" 
-GRANT ALL ON FUNCTIONS TO auth_stage_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-staging" 
+GRANT ALL ON FUNCTIONS TO auth_staging_app;
 ```
 
 ##### 5. Создайте пользователя для staging (read-only)
 
 ```sql
 -- Создание пользователя
-CREATE USER auth_stage_readonly WITH PASSWORD 'СГЕНЕРИРОВАННЫЙ_ПАРОЛЬ_4';
+CREATE USER auth_staging_readonly WITH PASSWORD 'СГЕНЕРИРОВАННЫЙ_ПАРОЛЬ_4';
 
 -- Права на подключение
-GRANT CONNECT ON DATABASE db_main TO auth_stage_readonly;
+GRANT CONNECT ON DATABASE db_main TO auth_staging_readonly;
 
 -- Права на схему (только чтение)
-GRANT USAGE ON SCHEMA "auth-stage" TO auth_stage_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA "auth-stage" TO auth_stage_readonly;
+GRANT USAGE ON SCHEMA "auth-staging" TO auth_staging_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA "auth-staging" TO auth_staging_readonly;
 
 -- Автоматические права
-ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-stage" 
-GRANT SELECT ON TABLES TO auth_stage_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "auth-staging" 
+GRANT SELECT ON TABLES TO auth_staging_readonly;
 ```
 
 ##### 6. Проверьте созданных пользователей
@@ -200,26 +200,26 @@ kubectl create secret generic postgres-auth-prod-readonly \
 ##### 9. Создайте Kubernetes Secret для staging (app)
 
 ```bash
-kubectl create secret generic postgres-auth-stage-app \
+kubectl create secret generic postgres-auth-staging-app \
   --from-literal=host=master.<UUID>.c.dbaas.selcloud.ru \
   --from-literal=port=5432 \
   --from-literal=dbname=db_main \
-  --from-literal=user=auth_stage_app \
+  --from-literal=user=auth_staging_app \
   --from-literal=password='СГЕНЕРИРОВАННЫЙ_ПАРОЛЬ_3' \
-  --from-literal=schema=auth-stage \
+  --from-literal=schema=auth-staging \
   -n auth-service
 ```
 
 ##### 10. Создайте Kubernetes Secret для staging (readonly)
 
 ```bash
-kubectl create secret generic postgres-auth-stage-readonly \
+kubectl create secret generic postgres-auth-staging-readonly \
   --from-literal=host=master.<UUID>.c.dbaas.selcloud.ru \
   --from-literal=port=5432 \
   --from-literal=dbname=db_main \
-  --from-literal=user=auth_stage_readonly \
+  --from-literal=user=auth_staging_readonly \
   --from-literal=password='СГЕНЕРИРОВАННЫЙ_ПАРОЛЬ_4' \
-  --from-literal=schema=auth-stage \
+  --from-literal=schema=auth-staging \
   -n auth-service
 ```
 
@@ -295,10 +295,10 @@ db_main (база данных)
 │   │   └── auth_prod_readonly (только чтение)
 │   └── Таблицы: (создаются приложением)
 │
-└── Схема: auth-stage
+└── Схема: auth-staging
     ├── Пользователи:
-    │   ├── auth_stage_app (полный доступ)
-    │   └── auth_stage_readonly (только чтение)
+    │   ├── auth_staging_app (полный доступ)
+    │   └── auth_staging_readonly (только чтение)
     └── Таблицы: (создаются приложением)
 ```
 
@@ -306,8 +306,8 @@ db_main (база данных)
 Kubernetes Secrets (namespace: auth-service)
 ├── postgres-auth-prod-app
 ├── postgres-auth-prod-readonly
-├── postgres-auth-stage-app
-└── postgres-auth-stage-readonly
+├── postgres-auth-staging-app
+└── postgres-auth-staging-readonly
 ```
 
 ---
