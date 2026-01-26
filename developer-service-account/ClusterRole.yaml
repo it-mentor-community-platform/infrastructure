@@ -1,0 +1,15 @@
+# ClusterRole: минимальные права на чтение (для навигации)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: developer-read-only
+rules:
+# Просмотр namespaces
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list"]
+
+# Просмотр nodes (для kubectl get nodes)
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
