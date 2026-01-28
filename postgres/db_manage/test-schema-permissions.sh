@@ -243,8 +243,11 @@ echo ""
 
 # Получаем список других схем (не своя, не системные)
 OTHER_SCHEMAS=$(kubectl exec -i deployment/bastion -n bastion -- bash -c \
-    "PGPASSWORD='$PGPASSWORD' psql -h '$PGHOST' -p '$PGPORT' -U '$PGUSER' -d '$PGDATABASE' -tAc \
-    \"SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('$SCHEMA_NAME', 'pg_catalog', 'information_schema', 'pg_toast', 'public') LIMIT 3;\" 2>/dev/null" || echo "")
+  "PGPASSWORD=$PGPASSWORD psql -h $PGHOST -p $PGPORT -U $PGUSER -d $PGDATABASE -tAc \
+  \"SELECT nspname FROM pg_namespace 
+   WHERE nspname NOT LIKE 'pg_%' 
+   AND nspname NOT IN ('$SCHEMA_NAME', 'information_schema', 'public') 
+   LIMIT 3;\" 2>/dev/null" | tr -d ' ')
 
 if [ -n "$OTHER_SCHEMAS" ]; then
     log_info "Найдены другие схемы для тестирования изоляции"

@@ -153,58 +153,13 @@ echo "  Host: $PGHOST"
 echo "  User: $PGUSER"
 echo ""
 
-#############################################################################
-# Проверка существования схемы
-#############################################################################
-
-log_step "Шаг 2/5: Проверка и создание схемы в PostgreSQL..."
-echo ""
-
 export PGPASSWORD
 
-# Проверка существования схемы
-SCHEMA_EXISTS=$(kubectl exec -i deployment/bastion -n bastion -- \
-    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -tAc \
-    "SELECT schema_name FROM information_schema.schemata WHERE schema_name = '$SCHEMA_NAME';" 2>/dev/null)
-
-SCHEMA_ALREADY_EXISTS=false
-
-if [ "$SCHEMA_EXISTS" = "$SCHEMA_NAME" ]; then
-    SCHEMA_ALREADY_EXISTS=true
-    log_warning "Схема '$SCHEMA_NAME' уже существует"
-    echo ""
-    read -p "Схема уже создана. Продолжить с выдачей прав и созданием Secret? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_warning "Операция отменена"
-        exit 0
-    fi
-else
-    # SQL скрипт для создания схемы
-    SQL_CREATE_SCHEMA=$(cat <<EOF
-CREATE SCHEMA IF NOT EXISTS ${SCHEMA_NAME};
-COMMENT ON SCHEMA ${SCHEMA_NAME} IS 'Schema for ${SERVICE_NAME} service in ${ENVIRONMENT} environment';
-EOF
-)
-
-    kubectl exec -i deployment/bastion -n bastion -- \
-        psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" <<< "$SQL_CREATE_SCHEMA" 2>&1 | grep -v "^psql" | grep -v "NOTICE"
-
-    if [ $? -ne 0 ]; then
-        log_error "Ошибка при создании схемы"
-        exit 1
-    fi
-
-    log_success "Схема '$SCHEMA_NAME' создана"
-fi
-
-echo ""
-
 #############################################################################
-# Проверка существования пользователя
+# Проверка существования пользователя (ТЕПЕРЬ ШАГ 2!)
 #############################################################################
 
-log_step "Шаг 3/5: Проверка пользователя PostgreSQL..."
+log_step "Шаг 2/5: Проверка пользователя PostgreSQL..."
 echo ""
 
 USER_EXISTS=$(kubectl exec -i deployment/bastion -n bastion -- \
@@ -224,7 +179,6 @@ if [ "$USER_EXISTS" = "1" ]; then
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         UPDATE_PASSWORD=true
     else
-        # Пользователь не хочет обновлять пароль
         log_info "Пароль не будет обновлён. Продолжаем с выдачей прав..."
         SKIP_USER_CREATION=true
     fi
@@ -271,11 +225,10 @@ if [ "$USER_ALREADY_EXISTS" = false ]; then
 fi
 
 #############################################################################
-# Запрос пароля пользователя (только если требуется)
+# Запрос пароля пользователя
 #############################################################################
 
 PASSWORD_APP=""
-
 if [ "$SKIP_USER_CREATION" = false ]; then
     echo ""
     if [ "$UPDATE_PASSWORD" = true ]; then
@@ -286,12 +239,10 @@ if [ "$SKIP_USER_CREATION" = false ]; then
     echo ""
     read -s -p "Пароль: " PASSWORD_APP
     echo ""
-
     if [ -z "$PASSWORD_APP" ]; then
         log_error "Пароль не может быть пустым"
         exit 1
     fi
-
     log_success "Пароль получен"
     echo ""
 fi
@@ -337,10 +288,58 @@ if [ "$USER_ALREADY_EXISTS" = false ]; then
         log_error "Убедитесь, что пользователь создан через панель Selectel"
         exit 1
     fi
-
     log_success "Пользователь '$USER_APP' найден в базе данных"
     echo ""
 fi
+
+#############################################################################
+# Проверка и создание схемы (ТЕПЕРЬ ШАГ 3!)
+#############################################################################
+
+log_step "Шаг 3/5: Проверка и создание схемы в PostgreSQL..."
+echo ""
+
+# Проверка существования схемы
+SCHEMA_EXISTS=$(kubectl exec -i deployment/bastion -n bastion -- \
+    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -tAc \
+    "SELECT schema_name FROM information_schema.schemata WHERE schema_name = '$SCHEMA_NAME';" 2>/dev/null)
+
+SCHEMA_ALREADY_EXISTS=false
+
+if [ "$SCHEMA_EXISTS" = "$SCHEMA_NAME" ]; then
+    SCHEMA_ALREADY_EXISTS=true
+    log_warning "Схема '$SCHEMA_NAME' уже существует"
+    echo ""
+    read -p "Схема уже создана. Продолжить с выдачей прав и созданием Secret? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_warning "Операция отменена"
+        exit 0
+    fi
+else
+    # SQL скрипт для создания схемы
+    # ВАЖНО: Теперь пользователь УЖЕ существует, можем сразу назначить его владельцем!
+    SQL_CREATE_SCHEMA=$(cat <<EOF
+CREATE SCHEMA IF NOT EXISTS ${SCHEMA_NAME};
+COMMENT ON SCHEMA ${SCHEMA_NAME} IS 'Schema for ${SERVICE_NAME} service in ${ENVIRONMENT} environment';
+
+-- КРИТИЧНО: Сменить владельца схемы на пользователя приложения (он уже существует!)
+ALTER SCHEMA ${SCHEMA_NAME} OWNER TO ${USER_APP};
+EOF
+)
+
+    kubectl exec -i deployment/bastion -n bastion -- \
+        psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" <<< "$SQL_CREATE_SCHEMA" 2>&1 | grep -v "^psql" | grep -v "NOTICE"
+
+    if [ $? -ne 0 ]; then
+        log_error "Ошибка при создании схемы"
+        exit 1
+    fi
+
+    log_success "Схема '$SCHEMA_NAME' создана и владелец назначен"
+fi
+
+echo ""
 
 #############################################################################
 # Выдача прав пользователю на схему
@@ -350,26 +349,31 @@ log_step "Шаг 4/5: Выдача прав пользователю на схе
 echo ""
 
 # SQL скрипт для выдачи прав
-# ВАЖНО: 
-# 1. USAGE + CREATE на схеме = право создавать объекты ВНУТРИ своей схемы
-# 2. REVOKE CREATE ON DATABASE = запрет создания НОВЫХ схем
-# 3. REVOKE ALL ON SCHEMA public = запрет на использование public схемы
 SQL_GRANT_PRIVILEGES=$(cat <<EOF
--- Выдача прав на свою схему
+-- ШАГ 1: КРИТИЧНО! Отозвать права у PUBLIC (это затрагивает ВСЕХ пользователей)
+REVOKE ALL ON SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
+
+-- ШАГ 2: Выдача прав ТОЛЬКО своему пользователю
 GRANT USAGE, CREATE ON SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 
--- Автоматические права на будущие объекты в своей схеме
-ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME} GRANT ALL ON TABLES TO ${USER_APP};
-ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME} GRANT ALL ON SEQUENCES TO ${USER_APP};
-ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME} GRANT ALL ON FUNCTIONS TO ${USER_APP};
+-- ШАГ 3: Автоматические права на будущие объекты (FOR USER - критично!)
+ALTER DEFAULT PRIVILEGES FOR USER ${USER_APP} IN SCHEMA ${SCHEMA_NAME} 
+    GRANT ALL ON TABLES TO ${USER_APP};
+ALTER DEFAULT PRIVILEGES FOR USER ${USER_APP} IN SCHEMA ${SCHEMA_NAME} 
+    GRANT ALL ON SEQUENCES TO ${USER_APP};
+ALTER DEFAULT PRIVILEGES FOR USER ${USER_APP} IN SCHEMA ${SCHEMA_NAME} 
+    GRANT ALL ON FUNCTIONS TO ${USER_APP};
 
--- Запретить создание новых схем
+-- ШАГ 4: Запретить создание новых схем своему пользователю
 REVOKE CREATE ON DATABASE ${PGDATABASE} FROM ${USER_APP};
 
--- Запретить доступ к схеме public (изоляция)
+-- ШАГ 5: Запретить доступ к схеме public своему пользователю
 REVOKE ALL ON SCHEMA public FROM ${USER_APP};
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${USER_APP};
 EOF
@@ -387,7 +391,7 @@ log_success "Права на схему '$SCHEMA_NAME' выданы пользо
 echo ""
 
 #############################################################################
-# Проверка подключения с новым пользователем (только если есть пароль)
+# Проверка подключения с новым пользователем
 #############################################################################
 
 if [ "$SKIP_USER_CREATION" = false ]; then
@@ -410,7 +414,7 @@ if [ "$SKIP_USER_CREATION" = false ]; then
 fi
 
 #############################################################################
-# Создание Kubernetes Secret (только если есть пароль)
+# Создание Kubernetes Secret
 #############################################################################
 
 if [ "$SKIP_USER_CREATION" = false ]; then
@@ -487,6 +491,8 @@ else
     echo -e "     Пользователь: ${GREEN}${USER_APP}${NC} ${CYAN}(создан)${NC}"
 fi
 echo -e "     Права:        ${GREEN}✅ CREATE объектов в своей схеме${NC}"
+echo -e "                   ${GREEN}✅ Владелец схемы${NC}"
+echo -e "                   ${GREEN}✅ Изоляция от других схем${NC}"
 echo -e "                   ${RED}❌ CREATE новых схем запрещён${NC}"
 echo -e "                   ${RED}❌ Доступ к схеме public запрещён${NC}"
 echo ""
