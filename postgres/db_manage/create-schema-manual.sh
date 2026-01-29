@@ -153,13 +153,58 @@ echo "  Host: $PGHOST"
 echo "  User: $PGUSER"
 echo ""
 
+#############################################################################
+# Проверка существования схемы
+#############################################################################
+
+log_step "Шаг 2/5: Проверка и создание схемы в PostgreSQL..."
+echo ""
+
 export PGPASSWORD
 
+# Проверка существования схемы
+SCHEMA_EXISTS=$(kubectl exec -i deployment/bastion -n bastion -- \
+    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -tAc \
+    "SELECT schema_name FROM information_schema.schemata WHERE schema_name = '$SCHEMA_NAME';" 2>/dev/null)
+
+SCHEMA_ALREADY_EXISTS=false
+
+if [ "$SCHEMA_EXISTS" = "$SCHEMA_NAME" ]; then
+    SCHEMA_ALREADY_EXISTS=true
+    log_warning "Схема '$SCHEMA_NAME' уже существует"
+    echo ""
+    read -p "Схема уже создана. Продолжить с выдачей прав и созданием Secret? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_warning "Операция отменена"
+        exit 0
+    fi
+else
+    # SQL скрипт для создания схемы
+    SQL_CREATE_SCHEMA=$(cat <<EOF
+CREATE SCHEMA IF NOT EXISTS ${SCHEMA_NAME};
+COMMENT ON SCHEMA ${SCHEMA_NAME} IS 'Schema for ${SERVICE_NAME} service in ${ENVIRONMENT} environment';
+EOF
+)
+
+    kubectl exec -i deployment/bastion -n bastion -- \
+        psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" <<< "$SQL_CREATE_SCHEMA" 2>&1 | grep -v "^psql" | grep -v "NOTICE"
+
+    if [ $? -ne 0 ]; then
+        log_error "Ошибка при создании схемы"
+        exit 1
+    fi
+
+    log_success "Схема '$SCHEMA_NAME' создана"
+fi
+
+echo ""
+
 #############################################################################
-# Проверка существования пользователя (ТЕПЕРЬ ШАГ 2!)
+# Проверка существования пользователя
 #############################################################################
 
-log_step "Шаг 2/5: Проверка пользователя PostgreSQL..."
+log_step "Шаг 3/5: Проверка пользователя PostgreSQL..."
 echo ""
 
 USER_EXISTS=$(kubectl exec -i deployment/bastion -n bastion -- \
@@ -179,6 +224,7 @@ if [ "$USER_EXISTS" = "1" ]; then
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         UPDATE_PASSWORD=true
     else
+        # Пользователь не хочет обновлять пароль
         log_info "Пароль не будет обновлён. Продолжаем с выдачей прав..."
         SKIP_USER_CREATION=true
     fi
@@ -225,10 +271,11 @@ if [ "$USER_ALREADY_EXISTS" = false ]; then
 fi
 
 #############################################################################
-# Запрос пароля пользователя
+# Запрос пароля пользователя (только если требуется)
 #############################################################################
 
 PASSWORD_APP=""
+
 if [ "$SKIP_USER_CREATION" = false ]; then
     echo ""
     if [ "$UPDATE_PASSWORD" = true ]; then
@@ -239,10 +286,12 @@ if [ "$SKIP_USER_CREATION" = false ]; then
     echo ""
     read -s -p "Пароль: " PASSWORD_APP
     echo ""
+
     if [ -z "$PASSWORD_APP" ]; then
         log_error "Пароль не может быть пустым"
         exit 1
     fi
+
     log_success "Пароль получен"
     echo ""
 fi
@@ -288,58 +337,10 @@ if [ "$USER_ALREADY_EXISTS" = false ]; then
         log_error "Убедитесь, что пользователь создан через панель Selectel"
         exit 1
     fi
+
     log_success "Пользователь '$USER_APP' найден в базе данных"
     echo ""
 fi
-
-#############################################################################
-# Проверка и создание схемы (ТЕПЕРЬ ШАГ 3!)
-#############################################################################
-
-log_step "Шаг 3/5: Проверка и создание схемы в PostgreSQL..."
-echo ""
-
-# Проверка существования схемы
-SCHEMA_EXISTS=$(kubectl exec -i deployment/bastion -n bastion -- \
-    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -tAc \
-    "SELECT schema_name FROM information_schema.schemata WHERE schema_name = '$SCHEMA_NAME';" 2>/dev/null)
-
-SCHEMA_ALREADY_EXISTS=false
-
-if [ "$SCHEMA_EXISTS" = "$SCHEMA_NAME" ]; then
-    SCHEMA_ALREADY_EXISTS=true
-    log_warning "Схема '$SCHEMA_NAME' уже существует"
-    echo ""
-    read -p "Схема уже создана. Продолжить с выдачей прав и созданием Secret? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_warning "Операция отменена"
-        exit 0
-    fi
-else
-    # SQL скрипт для создания схемы
-    # ВАЖНО: Теперь пользователь УЖЕ существует, можем сразу назначить его владельцем!
-    SQL_CREATE_SCHEMA=$(cat <<EOF
-CREATE SCHEMA IF NOT EXISTS ${SCHEMA_NAME};
-COMMENT ON SCHEMA ${SCHEMA_NAME} IS 'Schema for ${SERVICE_NAME} service in ${ENVIRONMENT} environment';
-
--- КРИТИЧНО: Сменить владельца схемы на пользователя приложения (он уже существует!)
-ALTER SCHEMA ${SCHEMA_NAME} OWNER TO ${USER_APP};
-EOF
-)
-
-    kubectl exec -i deployment/bastion -n bastion -- \
-        psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" <<< "$SQL_CREATE_SCHEMA" 2>&1 | grep -v "^psql" | grep -v "NOTICE"
-
-    if [ $? -ne 0 ]; then
-        log_error "Ошибка при создании схемы"
-        exit 1
-    fi
-
-    log_success "Схема '$SCHEMA_NAME' создана и владелец назначен"
-fi
-
-echo ""
 
 #############################################################################
 # Выдача прав пользователю на схему
@@ -349,31 +350,26 @@ log_step "Шаг 4/5: Выдача прав пользователю на схе
 echo ""
 
 # SQL скрипт для выдачи прав
+# ВАЖНО: 
+# 1. USAGE + CREATE на схеме = право создавать объекты ВНУТРИ своей схемы
+# 2. REVOKE CREATE ON DATABASE = запрет создания НОВЫХ схем
+# 3. REVOKE ALL ON SCHEMA public = запрет на использование public схемы
 SQL_GRANT_PRIVILEGES=$(cat <<EOF
--- ШАГ 1: КРИТИЧНО! Отозвать права у PUBLIC (это затрагивает ВСЕХ пользователей)
-REVOKE ALL ON SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
-REVOKE ALL ON ALL TABLES IN SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
-REVOKE ALL ON ALL SEQUENCES IN SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
-REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${SCHEMA_NAME} FROM PUBLIC;
-
--- ШАГ 2: Выдача прав ТОЛЬКО своему пользователю
+-- Выдача прав на свою схему
 GRANT USAGE, CREATE ON SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA ${SCHEMA_NAME} TO ${USER_APP};
 
--- ШАГ 3: Автоматические права на будущие объекты (FOR USER - критично!)
-ALTER DEFAULT PRIVILEGES FOR USER ${USER_APP} IN SCHEMA ${SCHEMA_NAME} 
-    GRANT ALL ON TABLES TO ${USER_APP};
-ALTER DEFAULT PRIVILEGES FOR USER ${USER_APP} IN SCHEMA ${SCHEMA_NAME} 
-    GRANT ALL ON SEQUENCES TO ${USER_APP};
-ALTER DEFAULT PRIVILEGES FOR USER ${USER_APP} IN SCHEMA ${SCHEMA_NAME} 
-    GRANT ALL ON FUNCTIONS TO ${USER_APP};
+-- Автоматические права на будущие объекты в своей схеме
+ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME} GRANT ALL ON TABLES TO ${USER_APP};
+ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME} GRANT ALL ON SEQUENCES TO ${USER_APP};
+ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME} GRANT ALL ON FUNCTIONS TO ${USER_APP};
 
--- ШАГ 4: Запретить создание новых схем своему пользователю
+-- Запретить создание новых схем
 REVOKE CREATE ON DATABASE ${PGDATABASE} FROM ${USER_APP};
 
--- ШАГ 5: Запретить доступ к схеме public своему пользователю
+-- Запретить доступ к схеме public (изоляция)
 REVOKE ALL ON SCHEMA public FROM ${USER_APP};
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${USER_APP};
 EOF
@@ -391,7 +387,7 @@ log_success "Права на схему '$SCHEMA_NAME' выданы пользо
 echo ""
 
 #############################################################################
-# Проверка подключения с новым пользователем
+# Проверка подключения с новым пользователем (только если есть пароль)
 #############################################################################
 
 if [ "$SKIP_USER_CREATION" = false ]; then
@@ -414,57 +410,46 @@ if [ "$SKIP_USER_CREATION" = false ]; then
 fi
 
 #############################################################################
-# Создание Kubernetes Secret
+# Генерация YAML для Kubernetes Secret
 #############################################################################
 
 if [ "$SKIP_USER_CREATION" = false ]; then
-    log_step "Шаг 5/5: Создание Kubernetes Secret..."
+    log_step "Шаг 5/5: Генерация YAML для Kubernetes Secret..."
     echo ""
 
-    # Создание namespace если не существует
-    kubectl create namespace "$K8S_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+    # Кодируем данные в base64 (без переносов строк)
+    HOST_B64=$(echo -n "$PGHOST" | base64 -w 0)
+    PORT_B64=$(echo -n "${PGPORT:-5432}" | base64 -w 0)
+    DBNAME_B64=$(echo -n "$PGDATABASE" | base64 -w 0)
+    USER_B64=$(echo -n "$USER_APP" | base64 -w 0)
+    PASSWORD_B64=$(echo -n "$PASSWORD_APP" | base64 -w 0)
+    SCHEMA_B64=$(echo -n "$SCHEMA_NAME" | base64 -w 0)
 
-    # Проверка существования Secret
-    if kubectl get secret "$SECRET_NAME" -n "$K8S_NAMESPACE" &>/dev/null; then
-        log_warning "Secret '$SECRET_NAME' уже существует"
-        if [ "$UPDATE_PASSWORD" = true ]; then
-            log_info "Secret будет обновлён с новым паролем"
-            kubectl delete secret "$SECRET_NAME" -n "$K8S_NAMESPACE" >/dev/null 2>&1
-        else
-            read -p "Обновить существующий Secret? (y/n): " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                kubectl delete secret "$SECRET_NAME" -n "$K8S_NAMESPACE" >/dev/null 2>&1
-                log_info "Старый Secret удалён"
-            else
-                log_warning "Secret не обновлён. Завершение работы."
-                exit 0
-            fi
-        fi
-    fi
+    log_info "Скопируйте YAML ниже и используйте в GitLab CI/CD:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
 
-    # Создание нового Secret
-    kubectl create secret generic "$SECRET_NAME" \
-        --from-literal=host="$PGHOST" \
-        --from-literal=port="${PGPORT:-5432}" \
-        --from-literal=dbname="$PGDATABASE" \
-        --from-literal=user="$USER_APP" \
-        --from-literal=password="$PASSWORD_APP" \
-        --from-literal=schema="$SCHEMA_NAME" \
-        -n "$K8S_NAMESPACE" \
-        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+    cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${SECRET_NAME}
+  namespace: ${K8S_NAMESPACE}
+type: Opaque
+data:
+  host: ${HOST_B64}
+  port: ${PORT_B64}
+  dbname: ${DBNAME_B64}
+  user: ${USER_B64}
+  password: ${PASSWORD_B64}
+  schema: ${SCHEMA_B64}
+EOF
 
-    if [ $? -eq 0 ]; then
-        log_success "Kubernetes Secret '$SECRET_NAME' создан в namespace '$K8S_NAMESPACE'"
-    else
-        log_error "Ошибка при создании Kubernetes Secret"
-        exit 1
-    fi
     echo ""
 else
-    log_step "Шаг 5/5: Создание Kubernetes Secret пропущено"
+    log_step "Шаг 5/5: Генерация Secret YAML пропущена"
     echo ""
-    log_info "Secret не обновляется, так как пароль не был изменён"
+    log_info "Secret не генерируется, так как пароль не был изменён"
     echo ""
 fi
 
@@ -473,7 +458,6 @@ fi
 #############################################################################
 
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log_success "Инфраструктура успешно создана!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
@@ -481,29 +465,24 @@ echo "📋 Результат:"
 echo ""
 echo "  🗄️  PostgreSQL:"
 if [ "$SCHEMA_ALREADY_EXISTS" = true ]; then
-    echo -e "     Схема:        ${YELLOW}${SCHEMA_NAME}${NC} ${CYAN}(существовала)${NC}"
+    echo "     Схема:        ${SCHEMA_NAME} (существовала)"
 else
-    echo -e "     Схема:        ${GREEN}${SCHEMA_NAME}${NC} ${CYAN}(создана)${NC}"
+    echo "     Схема:        ${SCHEMA_NAME} (создана)"
 fi
 if [ "$USER_ALREADY_EXISTS" = true ]; then
-    echo -e "     Пользователь: ${YELLOW}${USER_APP}${NC} ${CYAN}(существовал)${NC}"
+    echo "     Пользователь: ${USER_APP} (существовал)"
 else
-    echo -e "     Пользователь: ${GREEN}${USER_APP}${NC} ${CYAN}(создан)${NC}"
+    echo "     Пользователь: ${USER_APP} (создан)"
 fi
-echo -e "     Права:        ${GREEN}✅ CREATE объектов в своей схеме${NC}"
-echo -e "                   ${GREEN}✅ Владелец схемы${NC}"
-echo -e "                   ${GREEN}✅ Изоляция от других схем${NC}"
-echo -e "                   ${RED}❌ CREATE новых схем запрещён${NC}"
-echo -e "                   ${RED}❌ Доступ к схеме public запрещён${NC}"
+echo "     Права:        ✅ CREATE объектов в своей схеме"
+echo "                   ❌ CREATE новых схем запрещён"
+echo "                   ❌ Доступ к схеме public запрещён"
 echo ""
 
 if [ "$SKIP_USER_CREATION" = false ]; then
     echo "  🔐 Kubernetes Secret:"
-    echo -e "     Название:  ${GREEN}${SECRET_NAME}${NC}"
-    echo -e "     Namespace: ${GREEN}${K8S_NAMESPACE}${NC}"
-    if [ "$UPDATE_PASSWORD" = true ]; then
-        echo -e "     Статус:    ${CYAN}Обновлён с новым паролем${NC}"
-    fi
+    echo "     Название:  ${SECRET_NAME}"
+    echo "     Namespace: ${K8S_NAMESPACE}"
     echo ""
     echo "  ✅ Доступные ключи в Secret:"
     echo "     • host"
@@ -514,31 +493,7 @@ if [ "$SKIP_USER_CREATION" = false ]; then
     echo "     • schema"
 else
     echo "  🔐 Kubernetes Secret:"
-    echo -e "     Статус: ${YELLOW}Не обновлялся${NC}"
+    echo "     Статус: Не обновлялся"
 fi
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "📖 Следующие шаги:"
-echo ""
-echo "  1️⃣  Проверить права пользователя:"
-echo -e "     ${CYAN}./test-schema-permissions.sh $SERVICE_NAME $ENVIRONMENT${NC}"
-echo ""
-echo "  2️⃣  Проверить созданный Secret:"
-echo -e "     ${CYAN}kubectl get secret $SECRET_NAME -n $K8S_NAMESPACE${NC}"
-echo ""
-echo "  3️⃣  Просмотреть содержимое Secret:"
-echo -e "     ${CYAN}kubectl get secret $SECRET_NAME -n $K8S_NAMESPACE -o yaml${NC}"
-echo ""
-echo "  4️⃣  Протестировать подключение:"
-echo -e "     ${CYAN}kubectl exec -it deployment/bastion -n bastion -- bash${NC}"
-echo -e "     ${CYAN}PGPASSWORD='***' psql -h $PGHOST -U $USER_APP -d $PGDATABASE${NC}"
-echo -e "     ${CYAN}SET search_path TO '$SCHEMA_NAME';${NC}"
-echo -e "     ${CYAN}SELECT current_schema();${NC}"
-echo ""
-echo "  5️⃣  Использовать в приложении:"
-echo -e "     Укажите secretName: ${CYAN}$SECRET_NAME${NC} в Deployment вашего сервиса"
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""

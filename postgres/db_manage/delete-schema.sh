@@ -134,16 +134,19 @@ fi
 echo ""
 
 #############################################################################
-# Удаление Secret
+# Информация о Kubernetes Secret
 #############################################################################
 
-log_info "Удаление Kubernetes Secret..."
+log_info "Проверка Kubernetes Secret..."
 
 if kubectl get secret "$SECRET_NAME" -n "$K8S_NAMESPACE" &>/dev/null; then
-    kubectl delete secret "$SECRET_NAME" -n "$K8S_NAMESPACE" >/dev/null 2>&1
-    log_success "Secret '$SECRET_NAME' удалён"
+    log_warning "Secret '$SECRET_NAME' НЕ удаляется автоматически"
+    echo ""
+    echo "  📝 Если нужно удалить Secret вручную:"
+    echo "     kubectl delete secret $SECRET_NAME -n $K8S_NAMESPACE"
+    echo ""
 else
-    log_warning "Secret не найден или уже удалён"
+    log_info "Secret '$SECRET_NAME' не найден"
 fi
 
 echo ""
